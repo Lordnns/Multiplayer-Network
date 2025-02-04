@@ -6,15 +6,33 @@
 #include "Components/ActorComponent.h"
 #include "RewindComponent.generated.h"
 
+class UCapsuleComponent;
+
 USTRUCT()
 struct FFrameCollider
 {
 	GENERATED_BODY()
 
+	UPROPERTY()
 	FVector Location;
+	UPROPERTY()
 	FRotator Rotation;
+	UPROPERTY()
 	float HalfHeight;
+	UPROPERTY()
 	float Radius;
+};
+
+USTRUCT()
+struct FColliderPair
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FName BoneName;
+
+	UPROPERTY()
+	FFrameCollider Collider;
 };
 
 USTRUCT()
@@ -22,8 +40,11 @@ struct FFramePackage
 {
 	GENERATED_BODY()
 
+	UPROPERTY()
 	float Time;
-	TMap<FName, FFrameCollider> Colliders;
+	UPROPERTY()
+	TArray<FColliderPair> Colliders;
+	UPROPERTY()
 	FVector ForwardVector;
 };
 
@@ -35,7 +56,8 @@ class THE_NEST_API URewindComponent : public UActorComponent
 public:
 	URewindComponent();
 
-	void SaveFrame(const TMap<FName, class UCapsuleComponent*>& Colliders);
+	void SaveFrameCall();
+	
 	FFramePackage GetRewindFrame(float Time);
 	void ShowHistory() const;
 
@@ -43,7 +65,8 @@ public:
 	TMap<FName, UCapsuleComponent*> ColliderMap;
 
 protected:
-	
+
+	void SaveFrame(const TMap<FName, class UCapsuleComponent*>& Colliders);
 	virtual void BeginPlay() override;
 
 	UFUNCTION()

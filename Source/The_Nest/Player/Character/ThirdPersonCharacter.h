@@ -9,6 +9,18 @@
 #include "The_Nest/ActorComponents/SkinComponent.h"
 #include "ThirdPersonCharacter.generated.h"
 
+USTRUCT(BlueprintType)
+struct FRewindData
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	AActor* Owner;
+
+	UPROPERTY()
+	FFramePackage Frame;
+};
+
 UCLASS()
 class THE_NEST_API AThirdPersonCharacter : public AThe_NestCharacter
 {
@@ -127,9 +139,11 @@ protected:
 	void Client_NotifyReload(int NewBulletCount);
 
 	UFUNCTION(Server, Reliable, WithValidation)
-	void ServerShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector);
+	void ServerShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector, const TArray<FRewindData>& ClientRewindData);
 
-	void HandleClientShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector);
+
+
+	void HandleClientShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector, const TArray<FRewindData>& ValidatedRewindData);
 	void HandleHostShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector);
 	void OnHitDetected(AActor* HitActor);
 	void OnNoHitDetected();

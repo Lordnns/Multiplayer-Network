@@ -29,7 +29,11 @@ void URewindComponent::SaveFrame(const TMap<FName, UCapsuleComponent*>& Collider
         FrameCollider.HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
         FrameCollider.Radius = Capsule->GetScaledCapsuleRadius();
 
-        Frame.Colliders.Add(ColliderPair.Key, FrameCollider);
+        FColliderPair NewPair;
+        NewPair.BoneName = ColliderPair.Key;
+        NewPair.Collider = FrameCollider;
+
+        Frame.Colliders.Add(NewPair);
     }
 
     if (const AActor* OwnerActor = GetOwner())
@@ -81,17 +85,29 @@ FFramePackage URewindComponent::GetRewindFrame(float Time)
 
             for (const auto& Pair : CurrentFrame.Colliders)
             {
-                const FName& BoneName = Pair.Key;
-                const FFrameCollider& OlderCollider = Pair.Value;
-                const FFrameCollider& NewerCollider = NextFrame.Colliders[BoneName];
+                const FName& BoneName = Pair.BoneName;
+                const FFrameCollider& OlderCollider = Pair.Collider;
+                const FFrameCollider* NewerCollider = nullptr;
+                for (const auto& NextPair : NextFrame.Colliders)
+                {
+                    if (NextPair.BoneName == BoneName)
+                    {
+                        NewerCollider = &NextPair.Collider;
+                        break;
+                    }
+                }
 
                 FFrameCollider InterpolatedCollider;
-                InterpolatedCollider.Location = FMath::VInterpTo(NewerCollider.Location, OlderCollider.Location, 1.0f, Alpha);
-                InterpolatedCollider.Rotation = FMath::RInterpTo(NewerCollider.Rotation, OlderCollider.Rotation, 1.0f, Alpha);
-                InterpolatedCollider.HalfHeight = FMath::Lerp(NewerCollider.HalfHeight, OlderCollider.HalfHeight, Alpha);
-                InterpolatedCollider.Radius = FMath::Lerp(NewerCollider.Radius, OlderCollider.Radius, Alpha);
+                InterpolatedCollider.Location = FMath::VInterpTo(NewerCollider->Location, OlderCollider.Location, 1.0f, Alpha);
+                InterpolatedCollider.Rotation = FMath::RInterpTo(NewerCollider->Rotation, OlderCollider.Rotation, 1.0f, Alpha);
+                InterpolatedCollider.HalfHeight = FMath::Lerp(NewerCollider->HalfHeight, OlderCollider.HalfHeight, Alpha);
+                InterpolatedCollider.Radius = FMath::Lerp(NewerCollider->Radius, OlderCollider.Radius, Alpha);
 
-                RewindFrame.Colliders.Add(BoneName, InterpolatedCollider);
+                FColliderPair InterpolatedPair;
+                InterpolatedPair.BoneName = BoneName;
+                InterpolatedPair.Collider = InterpolatedCollider;
+
+                RewindFrame.Colliders.Add(InterpolatedPair);
             }
             // Interpolate ForwardVector using SLERP
             FVector OlderForwardVector = CurrentFrame.ForwardVector;
@@ -124,7 +140,7 @@ void URewindComponent::ShowHistory() const
 
         for (const auto& ColliderPair : Frame.Colliders)
         {
-            const FFrameCollider& Collider = ColliderPair.Value;
+            const FFrameCollider& Collider = ColliderPair.Collider;
             DrawDebugCapsule(
                 GetWorld(),
                 Collider.Location,
@@ -145,9 +161,6 @@ void URewindComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-    if (!GetOwner()->HasAuthority())
-        return;
-
     AActor* OwnerActor = GetOwner();
     if (!OwnerActor)
         return;
@@ -165,12 +178,17 @@ void URewindComponent::BeginPlay()
 
 void URewindComponent::CustomTickFunction()
 {
-    if (GetOwner()->HasAuthority() && ColliderMap.Num() > 0)
+    if (ColliderMap.Num() > 0)
     {
         SaveFrame(ColliderMap);
     }
     
-    ShowHistory();
+    //ShowHistory();
+}
+
+void URewindComponent::SaveFrameCall()
+{
+    SaveFrame(ColliderMap);
 }
 
 

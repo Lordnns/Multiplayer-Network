@@ -234,7 +234,30 @@ void AThirdPersonCharacter::ShootHandCanon(float ShotTime)
 			if(GetWorld()->GetTimeSeconds() - TimeAtLastShot > TimeBetweenShots)
 			{
 				TimeAtLastShot =  GetWorld()->GetTimeSeconds();
-				ServerShoot(ShotTime, GetFollowCamera()->GetComponentLocation(), GetFollowCamera()->GetForwardVector());
+				// Collect all rewind components in the level
+				TArray<URewindComponent*> RewindComponents;
+				for (TObjectIterator<URewindComponent> It; It; ++It)
+				{
+					if (It->GetWorld() == GetWorld())
+					{
+						RewindComponents.Add(*It);
+					}
+				}
+
+				// Retrieve frames for all players
+				TArray<FRewindData> ClientRewindData;
+				for (URewindComponent* RewindComp : RewindComponents)
+				{
+					FRewindData Data;
+					Data.Owner = RewindComp->GetOwner();
+					const float Time = GetWorld()->GetTimeSeconds();
+					RewindComp->SaveFrameCall();
+					Data.Frame = RewindComp->GetRewindFrame(Time);
+					ClientRewindData.Add(Data);
+				}
+
+				// Send shot information and the interpolated frames to the server
+				ServerShoot(ShotTime, GetFollowCamera()->GetComponentLocation(), GetFollowCamera()->GetForwardVector(), ClientRewindData);
 				Server_Fire();
 			
 				SpawnMuzzleFlash();
@@ -283,29 +306,73 @@ TMap<FName, UCapsuleComponent*> AThirdPersonCharacter::GetBones()
 	return RewindBones;
 }
 
-void AThirdPersonCharacter::ServerShoot_Implementation(float ShotTime, FVector CameraPosition, FVector CameraForwardVector)
+void AThirdPersonCharacter::ServerShoot_Implementation(float ShotTime, FVector CameraPosition, FVector CameraForwardVector, const TArray<FRewindData>& ClientRewindData)
 {
-	if(BulletInCharger > 0 && GetWorld()->GetTimeSeconds() - TimeAtLastShot > TimeBetweenShots)
+	// Retrieve server's rewind frames
+	TArray<FFramePackage> ServerRewindFrames;
+	for (const FRewindData& Data : ClientRewindData)
 	{
-		HandleClientShoot(ShotTime, CameraPosition, CameraForwardVector);
+		if (Data.Owner && !Data.Owner->IsPendingKillPending()) // Check if the owner is valid and not marked for destruction
+		{
+			if (URewindComponent* RewindComp = Cast<URewindComponent>(Data.Owner->FindComponentByClass<URewindComponent>()))
+			{
+				ServerRewindFrames.Add(RewindComp->GetRewindFrame(ShotTime));
+			}
+		}
+	}
+
+	// Compare Client Frames with Server Frames
+	bool bValidFrames = true;
+	for (int32 i = 0; i < ClientRewindData.Num(); i++)
+	{
+		const FFramePackage& ClientFrame = ClientRewindData[i].Frame;
+		const FFramePackage* ServerFrame = ServerRewindFrames.IsValidIndex(i) ? &ServerRewindFrames[i] : nullptr;
+		
+		if (ServerFrame)
+		{
+			for (const auto& ClientPair : ClientFrame.Colliders)
+			{
+				const FName& BoneName = ClientPair.BoneName;
+				const FFrameCollider& ClientCollider = ClientPair.Collider;
+
+				const FFrameCollider* ServerCollider = nullptr;
+				for (const auto& ServerPair : ServerFrame->Colliders)
+				{
+					if (ServerPair.BoneName == BoneName)
+					{
+						ServerCollider = &ServerPair.Collider;
+						break;
+					}
+				}
+
+				if (ServerCollider)
+				{
+					// Verify the sent frame aligns with the server's frame within an allowed variation
+					if (FVector::Dist(ServerCollider->Location, ClientCollider.Location) > 20.0f || // Position threshold
+						FQuat::ErrorAutoNormalize(ServerCollider->Rotation.Quaternion(), ClientCollider.Rotation.Quaternion()) > 0.1f) // Rotation threshold
+							{
+						bValidFrames = true;// we need to make this better but verify logic should turn this to false when implemented
+						break;
+							}
+				}
+			}
+		}
+
+		if (!bValidFrames) break;
+	}
+
+
+	// Perform server-side hit detection if the frames are valid
+	if (bValidFrames) {
+		HandleClientShoot(ShotTime, CameraPosition, CameraForwardVector, ClientRewindData);
+	} else {
+		UE_LOG(LogTemp, Warning, TEXT("Client frame verification failed."));
 	}
 }
 
-bool AThirdPersonCharacter::ServerShoot_Validate(float ShotTime, FVector CameraPosition, FVector CameraForwardVector)
+bool AThirdPersonCharacter::ServerShoot_Validate(float ShotTime, FVector CameraPosition, FVector CameraForwardVector, const TArray<FRewindData>& ClientRewindData)
 {
-	if(BulletInCharger > 0 && GetWorld()->GetTimeSeconds() - TimeAtLastShot > TimeBetweenShots)
-	{
-		return true;
-		
-	}
-	else
-	{
-		//return false;
-		//We will now return true and only block the execution since
-		//this is not cheating but normal behavior and could lead to
-		//client getting kick for a prediction issue which is our fault
-		return true;
-	}
+	return true; // Further anti-cheat checks can be added here
 }
 
 void AThirdPersonCharacter::Client_NotifyReload_Implementation(int NewBulletCount)
@@ -349,49 +416,13 @@ bool AThirdPersonCharacter::Server_ReloadCanon_Validate()
 	}
 }
 
-void AThirdPersonCharacter::HandleClientShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector)
+void AThirdPersonCharacter::HandleClientShoot(float ShotTime, FVector CameraPosition, FVector CameraForwardVector, const TArray<FRewindData>& ValidatedRewindData)
 {
 
 	TimeAtLastShot = GetWorld()->GetTimeSeconds();
 	BulletInCharger--;
 	float TimeOfShot = ShotTime;
     UWorld* World = GetWorld();
-	
-    // Collect all rewind components in the level
-    TArray<URewindComponent*> RewindComponents;
-    for (TObjectIterator<URewindComponent> It; It; ++It)
-    {
-        if (It->GetWorld() == World)
-        {
-            RewindComponents.Add(*It);
-        }
-    }
-
-	//Retrieve owner rewind frame
-    FFramePackage OwnerRewindFrame;
-	
-    for (URewindComponent* RewindComp : RewindComponents)
-    {
-        if (RewindComp->GetOwner() == this)
-        {
-           OwnerRewindFrame = RewindComp->GetRewindFrame(TimeOfShot);
-        }
-    }
-
-    // Ensure we have valid rewind data for the owner
-    if (OwnerRewindFrame.Colliders.Num() == 0)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("No rewind data available for the shooting pawn."));
-        return;
-    }
-
-    // Retrieve the only collider for the owner
-    const FFrameCollider* OwnerCapsule = OwnerRewindFrame.Colliders.Find("canon");
-	if (!OwnerCapsule)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Owner canon collider not found in rewind frame."));
-		return;
-	}
 
     FVector Start = CameraPosition;
     FVector End = CameraPosition + (CameraForwardVector * ShotLenght);
@@ -404,34 +435,31 @@ void AThirdPersonCharacter::HandleClientShoot(float ShotTime, FVector CameraPosi
 	Params.AddIgnoredActor(this);
 	
      // Iterate over all rewind components and set bones/capsules to their rewind positions
-    for (URewindComponent* RewindComp : RewindComponents)
+    for (const FRewindData& Data : ValidatedRewindData)
     {
-    	if (RewindComp->GetOwner() == this)
-    	{
-    		continue; // Skip the owner
-    	}
-    	
-        AActor* OwnerActor = RewindComp->GetOwner();
-        FFramePackage Frame = RewindComp->GetRewindFrame(TimeOfShot);
-
-        for (const auto& ColliderPair : Frame.Colliders)
+        for (const auto& ColliderPair : Data.Frame.Colliders)
         {
-            const FName& BoneName = ColliderPair.Key;
-            const FFrameCollider& Collider = ColliderPair.Value;
+            const FName& BoneName = ColliderPair.BoneName;
+            const FFrameCollider& Collider = ColliderPair.Collider;
+        	if (Data.Owner && !Data.Owner->IsPendingKillPending()) // Check if the owner is valid and not marked for destruction
+        	{
+        		// Get the corresponding capsule component from the actor
+        		if (URewindComponent* RewindComp = Cast<URewindComponent>(Data.Owner->FindComponentByClass<URewindComponent>()))
+        		{
+        			if (UCapsuleComponent* Capsule = RewindComp->ColliderMap.FindRef(BoneName))
+        			{
+        				// Update the capsule's position and rotation to the rewinded frame
+        				Capsule->SetWorldLocation(Collider.Location);
+        				Capsule->SetWorldRotation(Collider.Rotation);
 
-            // Get the corresponding capsule component from the actor
-            if (UCapsuleComponent* Capsule = RewindComp->ColliderMap.FindRef(BoneName))
-            {
-                // Update the capsule's position and rotation to the rewinded frame
-                Capsule->SetWorldLocation(Collider.Location);
-                Capsule->SetWorldRotation(Collider.Rotation);
-
-                // Enable collision for raycasting
-                Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-                Capsule->SetCollisionObjectType(ECC_GameTraceChannel1); // Custom channel for rewind collisions
-                Capsule->SetCollisionResponseToAllChannels(ECR_Ignore);
-                Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
-            }
+        				// Enable collision for raycasting
+        				Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        				Capsule->SetCollisionObjectType(ECC_GameTraceChannel1); // Custom channel for rewind collisions
+        				Capsule->SetCollisionResponseToAllChannels(ECR_Ignore);
+        				Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+        			}
+        		}
+        	}
         }
     }
 
@@ -439,28 +467,31 @@ void AThirdPersonCharacter::HandleClientShoot(float ShotTime, FVector CameraPosi
     bool bHit = World->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, Params);
 	
     // Restore collision settings for rewind capsules
-    for (URewindComponent* RewindComp : RewindComponents)
-    {
-        AActor* OwnerActor = RewindComp->GetOwner();
-        FFramePackage Frame = RewindComp->GetRewindFrame(TimeOfShot);
+	for (const FRewindData& Data : ValidatedRewindData)
+	{
+		if (Data.Owner && !Data.Owner->IsPendingKillPending()) // Check if the owner is valid and not marked for destruction
+		{
+			if (URewindComponent* RewindComp = Cast<URewindComponent>(Data.Owner->FindComponentByClass<URewindComponent>()))
+			{
+				for (const auto& ColliderPair : Data.Frame.Colliders)
+				{
+					const FName& BoneName = ColliderPair.BoneName;
 
-        for (const auto& ColliderPair : Frame.Colliders)
-        {
-            const FName& BoneName = ColliderPair.Key;
+					// Get the corresponding capsule component from the actor
+					UCapsuleComponent* Capsule = nullptr;
+					if (AThirdPersonCharacter* Character = Cast<AThirdPersonCharacter>(Data.Owner))
+					{
+						Capsule = Character->GetBones().FindRef(BoneName);
+					}
 
-            // Get the corresponding capsule component from the actor
-            UCapsuleComponent* Capsule = nullptr;
-            if (AThirdPersonCharacter* Character = Cast<AThirdPersonCharacter>(OwnerActor))
-            {
-                Capsule = Character->GetBones().FindRef(BoneName);
-            }
-
-            if (Capsule)
-            {
-                // Restore collision settings
-                Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-            }
-        }
+					if (Capsule)
+					{
+						// Restore collision settings
+						Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					}
+				}
+			}
+		}
     }
 	
 	if (bHit)

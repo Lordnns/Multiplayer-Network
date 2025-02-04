@@ -12,7 +12,7 @@ void AMainMenuGameMode::Host(FText& PlayerName)
 	{
 		// Directly use the object path for travel
 		const FString LevelPath = FPackageName::ObjectPathToPackageName(LobbyWorldPath.ToString());
-		const FString TravelURL = FString::Printf(TEXT("%s?listen?PlayerName=%s?bIsLanMatch=1&game=Lobby"), *LevelPath, *PlayerName.ToString());
+		const FString TravelURL = FString::Printf(TEXT("%s?listen?PlayerName=%s?game=Lobby"), *LevelPath, *PlayerName.ToString());
 		GetWorld()->ServerTravel(TravelURL);
 	}
 }
